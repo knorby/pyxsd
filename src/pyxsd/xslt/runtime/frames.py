@@ -15,10 +15,10 @@ kept as a heap continuation.
 Budget exhaustion raises an uncatchable
 :class:`~pyxsd.xslt.errors.XsltDynamicError` with code ``PYXSD-XSLT-001``.
 The scheduler converts ``RecursionError`` caught at its guards into the
-same diagnostic. Close to the recursion limit, CPython can fail inside
-its own machinery before a guard runs and surface an uncoded built-in
-exception. This was observed on CPython 3.13 under a deeply nested host
-stack. The scheduler never changes the process-wide recursion limit.
+same diagnostic. In CPython 3.13.8 through 3.13.12, a specialized bound
+method call can fail at the recursion ceiling with an unrelated
+``TypeError`` instead of ``RecursionError`` (CPython issue gh-145008).
+The scheduler never changes the process-wide recursion limit.
 """
 
 from __future__ import annotations
@@ -142,10 +142,9 @@ class ExecutionLimits:
     dispatch. Frame-budget exhaustion and ``RecursionError`` caught at
     scheduler guards raise an uncatchable
     :class:`~pyxsd.xslt.errors.XsltDynamicError` with code
-    ``PYXSD-XSLT-001``. Close to the recursion limit, CPython can fail
-    inside its own machinery before a guard runs and surface an uncoded
-    built-in exception, as observed on CPython 3.13 under a deeply nested
-    host stack.
+    ``PYXSD-XSLT-001``. In CPython 3.13.8 through 3.13.12, a specialized
+    bound method call at the recursion ceiling can raise an unrelated
+    ``TypeError`` instead of ``RecursionError`` (CPython issue gh-145008).
 
     A safe tail call replaces its frame in place. Use ``max_steps`` to
     bound the number of scheduler dispatches in a tail-call chain;

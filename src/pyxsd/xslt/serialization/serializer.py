@@ -77,10 +77,9 @@ class Serializer:
 
         The serializer converts ``RecursionError`` caught while rendering
         into :class:`~pyxsd.xslt.errors.XsltSerializationError` with code
-        ``PYXSD-XSLT-001``. Close to the recursion limit, CPython can fail
-        inside its own machinery before a guard runs, and the uncoded
-        built-in exception then escapes. That condition was observed during
-        transformation on CPython 3.13 under a deeply nested host stack.
+        ``PYXSD-XSLT-001``. In CPython 3.13.8 through 3.13.12, a specialized
+        bound method call at the recursion ceiling can raise an unrelated
+        ``TypeError`` instead of ``RecursionError`` (CPython issue gh-145008).
         """
         resolved = cls._parameters(parameters)
         items = tuple(sequence)
