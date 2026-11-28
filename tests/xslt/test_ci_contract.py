@@ -867,6 +867,7 @@ print(json.dumps([
 """,
             str(root / "tests" / "xslt" / "corpus" / "catalog.xml"),
             str(jobs),
+            str(grace),
         ],
         env={**os.environ, "PYXSD_TEST_XSLT_WORKER_PID": str(pid_path)},
         cwd=REPO_ROOT,
@@ -881,17 +882,24 @@ print(json.dumps([
     assert results == expected
 
 
+_STUCK_SIBLING = None
+
+
+def _receive_stuck_sibling(event):
+    """Pool initializer: hand every worker the event its stuck sibling sets."""
+    global _STUCK_SIBLING
+    _STUCK_SIBLING = event
+
+
 def _unpicklable_payload(payload):
     """One case returns an unpicklable result; its sibling hangs in the C matcher."""
     _profile_name, _unicode_version, case, _timeout = payload
-    marker = Path(os.environ["PYXSD_TEST_STUCK_MARKER"])
     if case.local_name == "case-002":
-        marker.write_text("stuck", encoding="ascii")
+        _STUCK_SIBLING.set()
         # The C matcher holds the GIL here; the Python alarm cannot run.
         re.fullmatch(r"(a+)+", "a" * 80 + "!")
         raise AssertionError("the backtracking probe completed")
-    while not marker.exists():
-        time.sleep(0.01)
+    _STUCK_SIBLING.wait()
     return case.name, lambda: None
 
 
@@ -902,19 +910,25 @@ def test_parallel_unexpected_parent_failure_terminates_a_stuck_worker(tmp_path):
         (root / "tests" / "xslt" / "corpus" / "gate" / f"{name}.xsl").write_text(
             RIGHT_SHEET, encoding="utf-8"
         )
-    marker = tmp_path / "stuck.marker"
     run = run_probe(
         [
             sys.executable,
             "-c",
             """
+import functools
 import json
 import multiprocessing
 import sys
 from tests.xslt import suite
 from tests.xslt.catalog import load_catalog
-from tests.xslt.test_ci_contract import _unpicklable_payload
+from tests.xslt.test_ci_contract import _receive_stuck_sibling, _unpicklable_payload
 
+stuck = multiprocessing.Event()
+for method in multiprocessing.get_all_start_methods():
+    context = multiprocessing.get_context(method)
+    context.Pool = functools.partial(
+        context.Pool, initializer=_receive_stuck_sibling, initargs=(stuck,)
+    )
 suite._run_payload = _unpicklable_payload
 cases = tuple(load_catalog(sys.argv[1]).cases.values())
 try:
@@ -922,6 +936,7 @@ try:
 except BaseException as error:
     print(json.dumps([
         type(error).__name__,
+        stuck.is_set(),
         [child.pid for child in multiprocessing.active_children()],
     ]))
 else:
@@ -929,13 +944,12 @@ else:
 """,
             str(root / "tests" / "xslt" / "corpus" / "catalog.xml"),
         ],
-        env={**os.environ, "PYXSD_TEST_STUCK_MARKER": str(marker)},
         cwd=REPO_ROOT,
         timeout=60,
     )
-    error_name, children = json.loads(run.stdout)
+    error_name, sibling_stuck, children = json.loads(run.stdout)
     assert error_name == "MaybeEncodingError"
-    assert marker.exists()
+    assert sibling_stuck
     assert children == []
 
 
