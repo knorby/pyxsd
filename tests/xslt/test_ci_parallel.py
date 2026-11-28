@@ -15,7 +15,12 @@ from types import SimpleNamespace
 import pytest
 from tests.xslt import suite as suite_module
 from tests.xslt.catalog import load_catalog
-from tests.xslt.ci_contract_support import REPO_ROOT, RIGHT_SHEET, fixture_repo
+from tests.xslt.ci_contract_support import (
+    REPO_ROOT,
+    RIGHT_SHEET,
+    clear_ambient_timeout,
+    fixture_repo,
+)
 from tests.xslt.outcomes import CaseResult, Outcome
 from tests.xslt.suite import (
     ENGINE_UNICODE_VERSION,
@@ -27,6 +32,12 @@ from tests.xslt.suite import (
     with_unicode_version,
 )
 from tests.xslt.support import run_probe
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep every test's budget hermetic: the test sets it, never the shell."""
+    clear_ambient_timeout(monkeypatch)
 
 
 def test_parallel_execution_preserves_catalog_order(tmp_path: Path) -> None:

@@ -12,9 +12,8 @@ import sys
 from pathlib import Path
 
 import pytest
+from tests.xslt.limits_support import CATALOG
 from tests.xslt.support import run_probe
-
-_CORPUS = Path(__file__).with_name("corpus") / "catalog.xml"
 
 
 def test_catalog_boundary_accepts_a_completed_corpus_assertion(monkeypatch):
@@ -35,7 +34,7 @@ def test_catalog_boundary_accepts_a_completed_corpus_assertion(monkeypatch):
     assert calls[0][-1] == name
 
 
-@pytest.mark.skipif(not _CORPUS.is_file(), reason="XSLT corpus not checked out")
+@pytest.mark.skipif(not CATALOG.is_file(), reason="XSLT corpus not checked out")
 @pytest.mark.parametrize("name", ["catalog/catalog-003"])
 def test_pathological_corpus_case_has_a_controlled_verdict(name):
     run = run_probe(
@@ -44,7 +43,6 @@ def test_pathological_corpus_case_has_a_controlled_verdict(name):
             "-c",
             """
 import json
-import subprocess
 import sys
 from tests.xslt.catalog import load_catalog
 from tests.xslt.suite import SUITE_PROFILES, run_parallel
@@ -53,7 +51,7 @@ case = load_catalog(sys.argv[1]).cases[sys.argv[2]]
 (result,) = run_parallel((case,), SUITE_PROFILES["xslt30"], jobs=1, timeout=5)
 print(json.dumps([result.name, result.outcome.value, result.message]))
 """,
-            str(_CORPUS),
+            str(CATALOG),
             name,
         ],
         cwd=Path(__file__).resolve().parents[2],

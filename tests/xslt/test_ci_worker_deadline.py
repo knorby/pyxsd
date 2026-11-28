@@ -21,6 +21,12 @@ from tests.xslt.suite import SUITE_PROFILES, case_budget, run_parallel
 from tests.xslt.support import run_probe
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep every test's budget hermetic: the test sets it, never the shell."""
+    ci_contract_support.clear_ambient_timeout(monkeypatch)
+
+
 def test_parallel_accepts_an_empty_budgeted_selection():
     assert run_parallel((), SUITE_PROFILES["xslt30"], timeout=5, jobs=4) == ()
 

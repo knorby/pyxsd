@@ -19,6 +19,8 @@ from tests.xslt.support import run_probe, stylesheet
 from pyxsd.xslt import XsltProcessor
 from pyxsd.xslt.errors import XsltDynamicError
 
+CATALOG = Path(__file__).with_name("corpus") / "catalog.xml"
+
 
 def compile_body(body, *, output=""):
     return XsltProcessor().compile(

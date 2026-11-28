@@ -18,9 +18,6 @@ from pyxsd.xslt.results import delivered_entries
 from pyxsd.xslt.runtime.frames import ExecutionBudget, ExecutionLimits
 from pyxsd.xslt.serialization import Serializer
 
-TEXT = '<xsl:output method="text" encoding="UTF-8"/>'
-URI = "urn:test:output"
-
 
 def test_resource_bytes_count_xml_and_shared_text_json_octets(tmp_path):
     document = tmp_path / "input.xml"
