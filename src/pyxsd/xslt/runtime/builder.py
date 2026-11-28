@@ -840,6 +840,36 @@ class _NodeFactory:
                 copy_namespaces=copy_namespaces,
                 preserve_base=preserve_base,
             )
+        node = self._clone_shallow(source, parent, copy_namespaces, copy_attributes, preserve_base)
+        if deep and source.kind is NodeKind.ELEMENT:
+            # Leave each element detached until its descendants have been
+            # copied, as in a recursive postorder attachment.
+            stack = [(node, iter(source.children))]
+            while stack:
+                destination, children = stack[-1]
+                child = next(children, None)
+                if child is None:
+                    stack.pop()
+                    if stack:
+                        stack[-1][0]._append_child(destination)
+                    continue
+                clone = self._clone_shallow(
+                    child, destination, copy_namespaces, True, preserve_base
+                )
+                if child.kind is NodeKind.ELEMENT:
+                    stack.append((clone, iter(child.children)))
+                else:
+                    destination._append_child(clone)
+        return node
+
+    def _clone_shallow(
+        self,
+        source: XdmNode,
+        parent: XdmNode | None,
+        copy_namespaces: bool,
+        copy_attributes: bool,
+        preserve_base: bool,
+    ) -> XdmNode:
         if source.kind is NodeKind.ELEMENT:
             scope, declarations = self._copy_scope(
                 source,
@@ -886,17 +916,6 @@ class _NodeFactory:
                         self.namespace(declared_prefix, uri, parent=node, scope=scope)
                     )
                 node._append_namespace_node(self.namespace("xml", XML_NS, parent=node, scope=scope))
-            if deep:
-                for child in source.children:
-                    node._append_child(
-                        self.clone(
-                            child,
-                            parent=node,
-                            deep=True,
-                            copy_namespaces=copy_namespaces,
-                            preserve_base=preserve_base,
-                        )
-                    )
             return node
         value = source.string_value
         return self._new(

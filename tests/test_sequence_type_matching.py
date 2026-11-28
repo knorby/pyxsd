@@ -27,11 +27,11 @@ from pyxsd.xpath.engine import (
     _UNTYPED,
     _UNTYPED_ATOMIC,
     _annotate_atomic_value,
+    _AnnotationTable,
     _build_parser,
     _match_annotated_atomic_type,
     _match_tolerant_sequence_type,
     _PoolSchemaProxy,
-    _record_annotation,
     _ValueBridge,
     _XdmAdapterRegistry,
 )
@@ -151,8 +151,6 @@ def test_annotated_atomic_type_applies_occurrence_and_rejects_untyped(
 def test_annotated_atomic_values_are_distinct_and_bounded() -> None:
     from decimal import Decimal
 
-    from pyxsd.xpath import engine
-
     first = _annotate_atomic_value("x", f"{{{SUP}}}A")
     second = _annotate_atomic_value("x", f"{{{SUP}}}B")
     assert first is not second
@@ -164,40 +162,54 @@ def test_annotated_atomic_values_are_distinct_and_bounded() -> None:
     # integer cannot be wrapped: its annotation stays in the side table.
     integer = _annotate_atomic_value(3, f"{{{SUP}}}A")
     assert integer == 3 and type(integer) is int
-    annotations: dict[int, tuple[object, str]] = {}
-    _record_annotation(annotations, integer, f"{{{SUP}}}A")
+    annotations = _AnnotationTable()
+    annotations.record(integer, f"{{{SUP}}}A")
     assert annotations[id(integer)][1] == f"{{{SUP}}}A"
     derived = builtin_atomic_types["xs:normalizedString"]("x")
     annotated = _annotate_atomic_value(derived, f"{{{SUP}}}A")
     assert type(annotated) is type(derived)
     assert annotated is not derived and annotated._pyxsd_type == f"{{{SUP}}}A"
 
-    annotations: dict[int, tuple[object, str]] = {}
-    monkey = engine._ANNOTATION_LIMIT
-    engine._ANNOTATION_LIMIT = 1
-    try:
-        _record_annotation(annotations, object(), f"{{{SUP}}}A")
-        with pytest.raises(XsltError) as overflow:
-            _record_annotation(annotations, object(), f"{{{SUP}}}B")
-    finally:
-        engine._ANNOTATION_LIMIT = monkey
+    annotations = _AnnotationTable(1)
+    annotations.record(object(), f"{{{SUP}}}A")
+    with pytest.raises(XsltError) as overflow:
+        annotations.record(object(), f"{{{SUP}}}B")
     assert overflow.value.code == "PYXSD-XSLT-001"
     assert len(annotations) == 1
 
 
 def test_two_boolean_types_with_one_payload_fail_explicitly() -> None:
     """Two dynamic types over one boolean singleton cannot both be preserved."""
-    from pyxsd.xpath import engine
-
-    annotations: dict[int, tuple[object, str]] = {}
-    _record_annotation(annotations, True, f"{{{SUP}}}boolA")
+    annotations = _AnnotationTable()
+    annotations.record(True, f"{{{SUP}}}boolA")
     with pytest.raises(XsltError) as collision:
-        _record_annotation(annotations, True, f"{{{SUP}}}boolB")
+        annotations.record(True, f"{{{SUP}}}boolB")
     assert collision.value.code == "PYXSD-XSLT-002"
     assert not collision.value.catchable
     # Recording the same annotation again is idempotent, not a collision.
-    _record_annotation(annotations, True, f"{{{SUP}}}boolA")
-    assert engine._ANNOTATION_LIMIT > 1
+    annotations.record(True, f"{{{SUP}}}boolA")
+    assert len(annotations) == 1
+
+
+def test_standalone_xpath_keeps_its_default_annotation_limit() -> None:
+    from pyxsd.xpath.engine import XPathEngine
+    from pyxsd.xslt.errors import XsltDynamicError
+    from pyxsd.xslt.runtime.frames import ExecutionLimits
+
+    assert ExecutionLimits().max_annotations == _AnnotationTable()._capacity == 262_144
+    engine = XPathEngine("3.1")
+    compiled = engine.compile("reverse($values)", XPathStaticContext())
+    values = tuple(XdmAtomic.integer(i) for i in range(262_145))
+    fits = ExpressionEnvironment(variables={"values": values[:-1]})
+    assert engine.evaluate(compiled, fits) == values[-2::-1]
+    with pytest.raises(XsltDynamicError) as caught:
+        engine.evaluate(compiled, ExpressionEnvironment(variables={"values": values}))
+    assert caught.value.code == "PYXSD-XSLT-001"
+    assert caught.value.allow_catch is False
+    assert caught.value.args[0] == (
+        "the transformation exceeded its atomic type-annotation capacity; "
+        "an annotation is still reachable and cannot be discarded"
+    )
 
 
 def test_same_payload_boolean_types_fail_at_the_public_boundary(

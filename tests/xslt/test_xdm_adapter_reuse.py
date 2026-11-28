@@ -15,16 +15,18 @@ and adapter identity, never with a wall clock.
 
 from __future__ import annotations
 
+import gc
 import io
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from copy import copy
 from typing import Any
 
 import pytest
 from tests.xslt.support import stylesheet as _stylesheet
 
 import pyxsd.xpath.engine as engine_module
-from pyxsd.xdm import XdmAtomic
+from pyxsd.xdm import XdmAtomic, XdmFunction
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xpath.engine import (
     XPathEngine,
@@ -67,10 +69,8 @@ def _registry_recorder(monkeypatch: pytest.MonkeyPatch) -> list[_XdmAdapterRegis
     recorded: list[_XdmAdapterRegistry] = []
     original = _XdmAdapterRegistry.__init__
 
-    def record(
-        self: _XdmAdapterRegistry, *, max_documents: int = 512, max_nodes: int = 250_000
-    ) -> None:
-        original(self, max_documents=max_documents, max_nodes=max_nodes)
+    def record(self: _XdmAdapterRegistry, **options: Any) -> None:
+        original(self, **options)
         recorded.append(self)
 
     monkeypatch.setattr(_XdmAdapterRegistry, "__init__", record)
@@ -161,6 +161,80 @@ def test_cross_tree_node_order_is_total_across_parsed_documents() -> None:
     assert first_root is not None and second_root is not None
     assert _node_order_key(first_root) < _node_order_key(second_root)
     assert _node_order_key(first_root.children[0]) < _node_order_key(second_root.children[0])
+
+
+def test_evaluation_does_not_adapt_an_unread_document() -> None:
+    registry = _XdmAdapterRegistry()
+    read = _document(b"<r/>")
+    unread = _document(b"<unused/>")
+    environment = ExpressionEnvironment(
+        documents={"urn:read": read, "urn:unread": unread},
+        adapter_registry=registry,
+    )
+    engine = XPathEngine()
+    assert engine.evaluate(engine.compile("doc('urn:read')"), environment) == (read,)
+    assert registry.lookup(read) is not None
+    assert registry.lookup(unread) is None
+
+
+def test_document_bindings_memoize_registry_and_ephemeral_adapters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _XdmAdapterRegistry(max_documents=1)
+    admitted = _document(b"<admitted/>")
+    refused = _document(b"<refused/>")
+    registered = registry.document(admitted)
+    assert registered is not None
+    static = XPathStaticContext()
+    environment = ExpressionEnvironment(documents={"a": admitted, "r": refused})
+    bridge = _ValueBridge(None, static, environment, registry=registry)
+    original = bridge.adapt_document
+    reads = []
+
+    def observe(document):
+        reads.append(document)
+        return original(document)
+
+    monkeypatch.setattr(bridge, "adapt_document", observe)
+    context = engine_module._build_context(static, environment, Focus.absent(), bridge)
+    documents = context.documents
+    assert documents is not None
+    assert len(documents) == 2
+    assert tuple(documents) == ("a", "r")
+    assert "a" in documents
+    assert "missing" not in documents
+    assert reads == []
+    assert documents.get("missing") is None
+    assert documents["a"] is documents["a"] is registered
+    assert documents["r"] is documents["r"]
+    assert documents["r"].xdm is refused
+    assert registry.lookup(refused) is None
+    assert reads == [admitted, refused]
+
+
+def test_deferred_function_reads_a_document_after_its_creating_evaluation() -> None:
+    document = _document()
+    registry = _XdmAdapterRegistry()
+    environment = ExpressionEnvironment(documents={"urn:doc": document}, adapter_registry=registry)
+    engine = XPathEngine("3.1")
+    (deferred,) = engine.evaluate(engine.compile("function() { doc('urn:doc') }"), environment)
+    assert isinstance(deferred, XdmFunction)
+    assert registry.lookup(document) is None
+    gc.collect()
+    assert deferred.invoke(()) == (document,)
+
+
+def test_copied_context_keeps_unread_document_bindings_alive() -> None:
+    document = _document()
+    static = XPathStaticContext()
+    environment = ExpressionEnvironment(documents={"urn:doc": document})
+    bridge = _ValueBridge(None, static, environment)
+    original = engine_module._build_context(static, environment, Focus.absent(), bridge)
+    context = copy(original)
+    del original, bridge
+    gc.collect()
+    assert context.documents is not None
+    assert context.documents["urn:doc"].xdm is document
 
 
 def test_multi_document_set_operators_are_deterministic_and_total() -> None:

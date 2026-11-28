@@ -18,7 +18,7 @@ retrieves its target.
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
@@ -39,7 +39,7 @@ from pyxsd.source_spans import SourceIndex
 from pyxsd.xdm.document import CaptureSource
 from pyxsd.xdm.nodes import NodeKind, XdmDocument, XdmNode
 from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
-from pyxsd.xslt.errors import XsltStaticError
+from pyxsd.xslt.errors import XsltStaticError, is_budget_alarm
 
 XSLT_NS = "http://www.w3.org/1999/XSL/Transform"
 XML_NS = "http://www.w3.org/XML/1998/namespace"
@@ -198,6 +198,7 @@ class ModuleLoader:
         *,
         xml_policy: XmlParserPolicy | None = None,
         xml_limits: XmlLimits | None = None,
+        _charge_input: Callable[[int], None] | None = None,
     ) -> None:
         if resource_policy is not None and (xml_policy is not None or xml_limits is not None):
             raise ResourcePolicyError(
@@ -207,6 +208,7 @@ class ModuleLoader:
         self.resource_policy = resource_policy
         self._xml_policy = xml_policy
         self._xml_limits = xml_limits
+        self._charge_input = _charge_input
         self._cache: dict[str, SourceModule] = {}
         self._loading: list[tuple[str, ModuleKind | None]] = []
         self._anonymous = 0
@@ -271,11 +273,14 @@ class ModuleLoader:
 
     def _read(self, source: Any, *, source_id: str) -> tuple[bytes, str]:
         max_bytes = None if self._xml_limits is None else self._xml_limits.max_bytes
+        charge = self._charge_input if isinstance(source, (str, os.PathLike)) else None
         if self.resource_policy is not None:
             target = os.fspath(source) if isinstance(source, (str, os.PathLike)) else source
             data = self.resource_policy.read(target, base=None, purpose="schema")
             if not isinstance(data, ResourceData):  # pragma: no cover - policy contract
                 raise TypeError("a resource policy read must return ResourceData")
+            if charge is not None:
+                charge(len(data.content))
             captured = CaptureSource.from_content(
                 data.content,
                 source_name=data.source_id or source_id,
@@ -283,7 +288,7 @@ class ModuleLoader:
             return captured.data, captured.source_name
         if isinstance(source, (str, os.PathLike)):
             path = require_local_reference(os.fspath(source), purpose="schema")
-            captured = CaptureSource.from_input(path, max_bytes=max_bytes)
+            captured = CaptureSource.from_input(path, max_bytes=max_bytes, _charge_input=charge)
             return captured.data, path
         captured = CaptureSource.from_input(source, max_bytes=max_bytes)
         return captured.data, captured.source_name or source_id
@@ -318,6 +323,8 @@ class ModuleLoader:
             try:
                 content, actual_id = self._read(source, source_id=source_id)
             except (OSError, PyXSDError) as exc:
+                if is_budget_alarm(exc):
+                    raise
                 raise XsltStaticError(
                     f"cannot retrieve stylesheet module {source_id!r}: {exc}",
                     code="XTSE0165",

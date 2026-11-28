@@ -41,6 +41,7 @@ class EvaluationContext:
     original_plans: Mapping[tuple[str, str | None, int | None], _ComponentPlan] = field(
         default_factory=dict
     )
+    count_output: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.focus, Focus):

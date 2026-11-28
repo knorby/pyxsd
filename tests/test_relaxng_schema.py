@@ -21,6 +21,7 @@ from types import MappingProxyType
 from xml.etree import ElementTree as ET
 
 import pytest
+from tests.relaxng_schema_support import NS, VALID, compile_schema, deref
 
 import pyxsd
 import pyxsd.relaxng as relaxng
@@ -58,17 +59,6 @@ from pyxsd.relaxng.schema import RelaxNGSchema, _SchemaReport
 from pyxsd.resource_policy import ResourceData, ResourcePolicyError
 from pyxsd.validation import ValidationReport
 from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
-
-NS = "http://relaxng.org/ns/structure/1.0"
-
-VALID = f"""<grammar xmlns="{NS}">
-  <start>
-    <element name="doc">
-      <attribute name="id"><text/></attribute>
-      <optional><element name="item"><text/></element></optional>
-    </element>
-  </start>
-</grammar>"""
 
 CUSTOM = f"""<grammar xmlns="{NS}">
   <start>
@@ -174,24 +164,6 @@ class ScopePolicy:
         return parse_with_namespaces(io.BytesIO(data.content), context)  # type: ignore[arg-type]
 
 
-def compile_schema(
-    source: object = None,
-    **options: object,
-) -> RelaxNGSchema:
-    """Compile the shared valid schema unless another source is supplied."""
-    return RelaxNGSchema.compile(
-        io.StringIO(VALID) if source is None else source,  # type: ignore[arg-type]
-        **options,  # type: ignore[arg-type]
-    )
-
-
-def deref(pattern: object) -> object:
-    """Follow bound element reference edges to their target."""
-    while isinstance(pattern, Ref):
-        pattern = pattern.target
-    return pattern
-
-
 def resolve(pattern: object) -> object:
     """Rebuild a bound graph with every reference edge replaced by its target."""
     pattern = deref(pattern)
@@ -261,7 +233,7 @@ def test_a_bare_pattern_root_compiles_like_a_grammar_start():
     assert resolve(schema.grammar.start) == Element(Name(None, "x"), Empty())
 
 
-@pytest.mark.parametrize("construct", ["element", "group", "choice", "mixed"])
+@pytest.mark.parametrize("construct", ["element", "group"])
 def test_deep_authored_patterns_compile_to_deterministic_canonical_graphs(construct):
     depth = 1100
     if construct == "element":

@@ -1316,6 +1316,16 @@ def literal_element(
     invocation: _Invocation,
     context: EvaluationContext,
 ) -> XdmNode:
+    factory, element = _prepare_literal_element(plan, invocation, context)
+    content = invocation._execute_plans(plan.children, context=context)
+    return _finish_literal_element(plan, invocation, context, factory, element, content)
+
+
+def _prepare_literal_element(
+    plan: _LiteralPlan,
+    invocation: _Invocation,
+    context: EvaluationContext,
+) -> tuple[_NodeFactory, XdmNode]:
     factory = _NodeFactory()
     attribute_set_attributes: list[tuple[AttributeName, str]] = []
     for reference in plan.attribute_sets:
@@ -1341,7 +1351,17 @@ def literal_element(
         excluded_namespaces=plan.excluded_namespaces,
         namespace_alias_rules=plan.namespace_aliases,
     )
-    content = invocation._execute_plans(plan.children, context=context)
+    return factory, element
+
+
+def _finish_literal_element(
+    plan: _LiteralPlan,
+    invocation: _Invocation,
+    context: EvaluationContext,
+    factory: _NodeFactory,
+    element: XdmNode,
+    content: XdmSequence,
+) -> XdmNode:
     _append_complex_content(factory, element, content, allow_attributes=True)
     validate_constructed(
         element,
@@ -2062,6 +2082,10 @@ def execute_assert(
             document = _build_result_tree(message_values)
             detail = document.string_value.strip()
             value = (document,)
+    except RecursionError:
+        # Let the scheduler diagnose stack exhaustion before formatting it
+        # as an assertion failure.
+        raise
     except Exception as exc:
         if is_budget_alarm(exc):
             raise
@@ -2233,11 +2257,13 @@ def try_step(invocation: _Invocation, plan: _TryPlan, frame: Frame, cursor: int)
     )
     base_values = frame.values if replace_caller else ()
     child = Frame(
-        kind="instruction",
+        kind="literal-content" if frame.kind == "literal-content" else "instruction",
         component=frame.component,
         identity="xsl:try",
         program=try_body_program(plan),
-        context=frame.context,
+        context=replace(frame.context, count_output=False)
+        if frame.context.count_output
+        else frame.context,
         continuation=frame.continuation if replace_caller else None,
         extent=invocation.result_extent() if plan.rollback_output else None,
         error_handler=try_handler(invocation, plan, frame, base_values),
@@ -2295,11 +2321,11 @@ def try_handler(
         variables: dict[str, XdmSequence] = dict(frame.context.locals)
         variables.update(catch_variables(caught))
         catch_frame = Frame(
-            kind="instruction",
+            kind="literal-content" if frame.kind == "literal-content" else "instruction",
             component=frame.component,
             identity="xsl:catch",
             program=catch_program(catch),
-            context=replace(frame.context, locals=variables),
+            context=replace(frame.context, locals=variables, count_output=False),
             location=catch.instruction.location,
             values=base_values,
             group=frame.group,

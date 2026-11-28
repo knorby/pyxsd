@@ -50,14 +50,20 @@ from pyxsd.xdm.values import _coerce_atomic as _function_conversion_atomic
 from pyxsd.xdm.values import is_xsd_subtype
 from pyxsd.xpath.continuation import (
     ContinuationMachine,
+    FunctionCallPlan,
     HostFunction,
+    IfPlan,
     Suspension,
     XPathEvaluationError,
+)
+from pyxsd.xpath.continuation import (
+    Plan as XPathPlan,
 )
 from pyxsd.xpath.engine import (
     CompiledExpression,
     XPathEngine,
     XPathParserCache,
+    _AnnotationTable,
     _XdmAdapterRegistry,
     standalone_node_adapter,
 )
@@ -203,8 +209,8 @@ from pyxsd.xslt.results import (
     ResultShapeError,
     TransformationResult,
     _build_result_tree,
+    _new_result_nodes,
     _NodeFactory,
-    _result_node_count,
     _with_default_method,
     serialization_parameters,
 )
@@ -248,7 +254,9 @@ from pyxsd.xslt.runtime.frames import (
 )
 from pyxsd.xslt.runtime.functions import ABSENT, XsltContextBridge
 from pyxsd.xslt.runtime.instructions import (
+    _finish_literal_element,
     _item_string,
+    _prepare_literal_element,
     attribute_value,
     choose_branch,
     copy_of_value,
@@ -573,6 +581,61 @@ class _XPathState:
     machine: ContinuationMachine
 
 
+@dataclass(frozen=True, slots=True)
+class _TvtResume:
+    cursor: int
+    next_part: int
+    text: str
+
+
+def _has_terminal_function(plan: XPathPlan) -> bool:
+    if isinstance(plan, IfPlan):
+        return _has_terminal_function(plan.then) or _has_terminal_function(plan.otherwise)
+    return isinstance(plan, FunctionCallPlan)
+
+
+def _tvt_scalar_binding(sequence: XdmSequence) -> bool:
+    if len(sequence) != 1 or not isinstance(sequence[0], XdmAtomic):
+        return False
+    return sequence[0].type_name in {
+        f"{{{_XSD_NS}}}boolean",
+        f"{{{_XSD_NS}}}decimal",
+        f"{{{_XSD_NS}}}double",
+        f"{{{_XSD_NS}}}integer",
+        f"{{{_XSD_NS}}}string",
+    }
+
+
+def _has_constructor_call(plans: tuple[_Plan, ...]) -> bool:
+    """Detect dispatch reachable through scheduler-owned constructor bodies."""
+    for plan in plans:
+        if isinstance(plan, (_CallTemplatePlan, _ApplyTemplatesPlan, _OverridingPlan)):
+            return True
+        if isinstance(plan, _ChoosePlan):
+            if any(_has_constructor_call(branch) for _, branch in plan.branches):
+                return True
+            if _has_constructor_call(plan.otherwise or ()):
+                return True
+        if isinstance(plan, _TryPlan) and any(
+            _has_constructor_call(body)
+            for body in (plan.children, *(catch.children for catch in plan.catches))
+        ):
+            return True
+        if isinstance(
+            plan, (_LiteralPlan, _SequencePlan, _ForEachPlan, _ForEachGroupPlan, _IteratePlan)
+        ) and _has_constructor_call(plan.children):
+            return True
+        if isinstance(plan, _ConcatPlan) and any(
+            _has_constructor_call(part) for part in plan.parts
+        ):
+            return True
+        if isinstance(plan, _ForkPlan) and any(
+            _has_constructor_call(part) for part in plan.branches
+        ):
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Processor configuration
 
@@ -683,6 +746,19 @@ class XsltProcessor:
         executable artifact is returned.  *extensions* is an immutable Python
         extension registry; the compiled artifact keeps that snapshot.
         """
+        return self._compile(
+            source, static_parameters=static_parameters, schema=schema, extensions=extensions
+        )
+
+    def _compile(
+        self,
+        source: Any,
+        *,
+        static_parameters: Mapping[str, Any] | None = None,
+        schema: Any = None,
+        extensions: XsltExtensions | None = None,
+        charge_input: Callable[[int], None] | None = None,
+    ) -> CompiledStylesheet:
         if not isinstance(static_parameters, (Mapping, type(None))):
             raise TypeError("static_parameters must be a mapping or None")
         if extensions is not None and not isinstance(extensions, XsltExtensions):
@@ -696,6 +772,7 @@ class XsltProcessor:
                 self.resource_policy,
                 xml_policy=self.xml_policy,
                 xml_limits=self.xml_limits,
+                _charge_input=charge_input,
             )
             loaded: SourceModule = loader.load(source)
             effective = StaticPreprocessor().apply(loaded, parameters)
@@ -853,6 +930,7 @@ def _serialize_result_entry(
     *,
     secondary: bool,
     budget: ExecutionBudget,
+    overrides: Mapping[str, Any] | None = None,
 ) -> ResultEntry:
     """Return *entry* with ``serialized`` populated for its output method.
 
@@ -867,17 +945,16 @@ def _serialize_result_entry(
     serializer never resolves a map name a second time.
     """
     try:
-        parameters = serialization_parameters(entry, None)
-        parameters = _with_default_method(parameters, entry, None)
+        parameters = serialization_parameters(entry, overrides)
+        parameters = _with_default_method(parameters, entry, overrides)
         serialized = Serializer.serialize(
             entry.raw,
             parameters,
             result_tree=entry.tree is not None,
         )
         if budget.limits.max_output_bytes is not None:
-            encoded = Serializer.encode(serialized, parameters)
-            if not budget.take_output_bytes(len(encoded)):
-                raise resource_error("the transformation exceeded its output byte budget")
+            for _ in Serializer._budgeted_encoding(serialized, parameters, budget):
+                pass
     except XsltSerializationError as error:
         error.secondary = secondary
         raise
@@ -1010,6 +1087,7 @@ class CompiledStylesheet:
         validation_type: str | None = None,
     ) -> TransformationResult:
         """Run one fresh invocation of this compiled stylesheet."""
+        budget = ExecutionBudget(limits)
         options = _prepare_invocation(
             self,
             source=source,
@@ -1026,8 +1104,9 @@ class CompiledStylesheet:
             delivery=delivery,
             validation=validation,
             validation_type=validation_type,
+            budget=budget,
         )
-        return _Invocation(self, options, limits=limits).run()
+        return _Invocation(self, options, budget=budget).run()
 
     def as_transform(
         self,
@@ -5559,6 +5638,7 @@ def _prepare_invocation(
     delivery: str,
     validation: str | None = None,
     validation_type: str | None = None,
+    budget: ExecutionBudget | None = None,
 ) -> _InvocationOptions:
     package = stylesheet.package
     if delivery not in _DELIVERIES:
@@ -5633,6 +5713,7 @@ def _prepare_invocation(
             input_type_annotations=package.input_type_annotations,
             namespaces=package.namespaces,
             space_rules=stylesheet._space_rules.get(package.name, ()),
+            budget=budget,
         )
 
     explicit_global: XdmItem | None = None
@@ -5738,6 +5819,7 @@ def _source_inputs(
     input_type_annotations: str | None = None,
     namespaces: Mapping[str, str] | None = None,
     space_rules: Sequence[SpaceRule] = (),
+    budget: ExecutionBudget | None = None,
 ) -> tuple[XdmSequence, XdmItem | None]:
     annotations = "unspecified" if input_type_annotations is None else input_type_annotations
 
@@ -5749,6 +5831,11 @@ def _source_inputs(
             validation_type=validation_type,
             input_type_annotations=annotations,
             namespaces=namespaces or {},
+            charge_input=(
+                budget.charge_resource_bytes
+                if budget is not None and budget.limits.max_resource_bytes is not None
+                else None
+            ),
         )
         return apply_source_space_rules(document, rules=space_rules)
 
@@ -5786,6 +5873,7 @@ def _typed_source(
     validation_type: str | None,
     input_type_annotations: str,
     namespaces: Mapping[str, str],
+    charge_input: Callable[[int], None] | None = None,
 ) -> XdmDocument:
     """Parse one source input, converting validation failures to XSLT codes."""
     from pyxsd.xdm.document import DocumentValidationError, parse_typed_document
@@ -5811,6 +5899,7 @@ def _typed_source(
             validation=validation,
             input_type_annotations=input_type_annotations,
             type_name=type_name,
+            _charge_input=charge_input,
         )
     except DocumentValidationError as exc:
         code = {
@@ -6332,14 +6421,18 @@ class _Invocation(Transformation):
         *,
         limits: Any = None,
         shared: Any = None,
+        budget: ExecutionBudget | None = None,
     ) -> None:
-        super().__init__(stylesheet, options, limits=limits, shared=shared)
+        super().__init__(stylesheet, options, limits=limits, shared=shared, _budget=budget)
         self._mode_dispatchers: dict[tuple[str | None, str | None], RuleDispatcher] = {}
         self._pattern_environments: dict[int, ExpressionEnvironment] = {}
         #: The URI of the output destination currently being written.  It is
         #: the base output URI for the principal result and the target URI while
         #: an xsl:result-document instruction evaluates its content.
         self._current_output_uri = options.output_uri
+        self._principal_nodes: set[int] = set()
+        self._output_nodes = self._principal_nodes
+        self._secondary_nodes: dict[str, set[int]] = {}
         self._legacy_serialization = LanguageProfile.from_options(stylesheet.profile).legacy
         #: Key indexes currently under construction, keyed like the completed
         #: cache and holding the document beside its address (XSLT 3.0
@@ -6348,7 +6441,9 @@ class _Invocation(Transformation):
         self._numbering: NumberingCache | None = None
         self._numbering_counters: dict[object, tuple[_NumberPlan, NumberingCounter | None]] = {}
         self._xpath_cache = XPathParserCache()
-        self._adapter_registry = _XdmAdapterRegistry()
+        self._adapter_registry = _XdmAdapterRegistry(
+            annotations=_AnnotationTable(charge=self.budget.charge_annotation),
+        )
         #: ``cache="yes"`` stylesheet-function results, scoped to one
         #: transformation invocation.  Arguments are the full XDM sequences,
         #: so a node or atomic value keeps identity.
@@ -6420,7 +6515,9 @@ class _Invocation(Transformation):
 
     # -- top level ---------------------------------------------------------
 
-    def run(self) -> TransformationResult:
+    def run(
+        self, *, principal_serialization: Mapping[str, Any] | None = None
+    ) -> TransformationResult:
         policy = self.stylesheet.processor.output_policy
         if policy is not None and self.options.output_uri is not None:
             policy.authorize(self.options.output_uri, principal=True)
@@ -6468,7 +6565,9 @@ class _Invocation(Transformation):
         )
         secondary = self.secondary
         if self.options.delivery == "stylesheet":
-            entry = _serialize_result_entry(entry, secondary=False, budget=self.budget)
+            entry = _serialize_result_entry(
+                entry, secondary=False, budget=self.budget, overrides=principal_serialization
+            )
             secondary = {
                 uri: _serialize_result_entry(value, secondary=True, budget=self.budget)
                 for uri, value in secondary.items()
@@ -6479,6 +6578,7 @@ class _Invocation(Transformation):
             messages=tuple(self.messages),
             warnings=tuple(self.warnings),
             _output_policy=policy,
+            _budget=self.budget,
         )
 
     @staticmethod
@@ -6487,14 +6587,25 @@ class _Invocation(Transformation):
         return not any(isinstance(item, (XdmMap, XdmFunction)) for item in sequence)
 
     def _check_output_budget(self, sequence: XdmSequence) -> None:
-        """Charge every delivered node when a node budget is configured."""
+        """Admit nodes from boundaries that could not stream final output."""
         if self.limits.max_output_nodes is None:
             return
-        total = _result_node_count(sequence)
-        for entry in self.secondary.values():
-            total += _result_node_count(entry.raw)
-        if not self.budget.take_output_nodes(total):
-            raise resource_error("the transformation exceeded its output budget")
+        self._charge_output_nodes(sequence, self._principal_nodes)
+        for uri, entry in self.secondary.items():
+            self._charge_output_nodes(entry.raw, self._secondary_nodes.get(uri, set()))
+
+    def _charge_output_nodes(self, sequence: tuple[object, ...], seen: set[int]) -> None:
+        for _ in _new_result_nodes(sequence, seen):
+            if not self.budget.take_output_nodes(1):
+                raise resource_error(
+                    self.budget.exhaustion(
+                        "output", "max_output_nodes", self.budget.output_nodes + 1
+                    )
+                )
+
+    def _admit_output(self, sequence: tuple[object, ...], context: EvaluationContext) -> None:
+        if context.count_output and context.final_output:
+            self._charge_output_nodes(sequence, self._output_nodes)
 
     def _check_principal_result_uri(self, sequence: XdmSequence) -> None:
         """Reject a result document that shares the principal result's URI.
@@ -6542,6 +6653,7 @@ class _Invocation(Transformation):
                 context=EvaluationContext(
                     focus=(Focus.absent() if global_item is None else Focus.singleton(global_item)),
                     tunnel_parameters=options.tunnel_parameters or {},
+                    count_output=self.limits.max_output_nodes is not None,
                 ),
             )
         assert options.initial_match_selection is not _ABSENT
@@ -6556,6 +6668,7 @@ class _Invocation(Transformation):
             options.tunnel_parameters,
             package_name=self.package.name,
             mode_package=self.package.name,
+            count_output=self.limits.max_output_nodes is not None,
         )
 
     # -- components and parameters ----------------------------------------
@@ -6720,6 +6833,7 @@ class _Invocation(Transformation):
                 locals=locals_,
                 rule_context=effective_rule_context,
                 original_functions=plan.original_functions,
+                count_output=component_context.count_output and conversion is None,
             ),
             continuation=None,
             location=component.location,
@@ -6800,6 +6914,7 @@ class _Invocation(Transformation):
             return frame
         value = frame.input
         materialized = value if isinstance(value, tuple) else (value,)
+        self._admit_output(materialized, frame.context)
         return replace(
             frame,
             input=NO_INPUT,
@@ -6878,8 +6993,18 @@ class _Invocation(Transformation):
         return Return(value)
 
     def _step_instruction(self, frame: Frame) -> FrameResult:
-        frame = self._consume_input(frame)
         program = cast(tuple[_Plan, ...], frame.program or ())
+        if isinstance(frame.cursor, _TvtResume):
+            resumed = frame.cursor
+            text = resumed.text + self._tvt_part_string(cast(XdmSequence, frame.input))
+            return self._step_tvt(
+                cast(_TvtPlan, program[resumed.cursor]),
+                replace(frame, input=NO_INPUT),
+                resumed.cursor,
+                resumed.next_part,
+                text,
+            )
+        frame = self._consume_input(frame)
         cursor = cast(int, frame.cursor)
         if cursor >= len(program):
             return self._return_frame(frame)
@@ -6894,6 +7019,7 @@ class _Invocation(Transformation):
             return start_iteration_plan(self, plan, frame, cursor)
         if isinstance(plan, _PerformSortPlan):
             value = perform_sort(plan, self, frame.context)
+            self._admit_output(tuple(value), frame.context)
             return Continue(replace(frame, cursor=cursor + 1, values=frame.values + tuple(value)))
         if isinstance(plan, _ParamPlan):
             raise XsltError(
@@ -6923,20 +7049,30 @@ class _Invocation(Transformation):
                     ),
                 )
             )
+        if isinstance(plan, _TvtPlan) and frame.kind != "literal-content":
+            return self._step_tvt(plan, frame, cursor)
+        if (
+            isinstance(plan, _LiteralPlan)
+            and not self.current_merge_sources
+            and _has_constructor_call(plan.children)
+        ):
+            return self._start_literal_content(plan, frame, cursor)
         if isinstance(plan, _SequencePlan):
             if plan.expression is not None:
-                return self._start_expression(plan.expression, frame, cursor)
-            return Continue(
-                replace(
-                    frame,
-                    program=(
-                        *plan.children,
-                        _RestoreVariablesPlan(frame.context.locals),
-                        *program[cursor + 1 :],
-                    ),
-                    cursor=0,
+                if frame.kind != "literal-content":
+                    return self._start_expression(plan.expression, frame, cursor)
+            else:
+                return Continue(
+                    replace(
+                        frame,
+                        program=(
+                            *plan.children,
+                            _RestoreVariablesPlan(frame.context.locals),
+                            *program[cursor + 1 :],
+                        ),
+                        cursor=0,
+                    )
                 )
-            )
         if isinstance(plan, _ChoosePlan):
             branch = choose_branch(self, plan, frame.context)
             if branch is None:
@@ -6952,16 +7088,23 @@ class _Invocation(Transformation):
                     cursor=0,
                 )
             )
+        if isinstance(plan, (_ConcatPlan, _ForkPlan)) and frame.kind == "literal-content":
+            restore = _RestoreVariablesPlan(frame.context.locals)
+            parts = plan.parts if isinstance(plan, _ConcatPlan) else plan.branches
+            content = tuple(item for part in parts for item in (*part, restore))
+            return Continue(replace(frame, program=(*content, *program[cursor + 1 :]), cursor=0))
         if isinstance(plan, _TryPlan):
             return try_step(self, plan, frame, cursor)
         if isinstance(plan, _CallTemplatePlan):
             return call_template_step(self, plan, frame, cursor)
         if isinstance(plan, _ApplyTemplatesPlan):
-            return apply_templates_step(self, plan, frame, cursor)
+            return apply_templates_step(
+                self, plan, frame, cursor, constructor=frame.kind == "literal-content"
+            )
         if isinstance(plan, _OverridingPlan):
             return overriding_step(self, plan, frame, cursor)
         try:
-            value = self._execute_plan(plan, context=frame.context)
+            value = self._emit_plan(plan, context=frame.context)
         except _IterationControlSignal as signal:
             control_frame = replace(
                 frame,
@@ -6974,6 +7117,108 @@ class _Invocation(Transformation):
             )
             return iteration_control(self, signal.plan, control_frame)
         return Continue(replace(frame, cursor=cursor + 1, values=frame.values + tuple(value)))
+
+    def _start_literal_content(self, plan: _LiteralPlan, frame: Frame, cursor: int) -> Call:
+        context = replace(frame.context, count_output=False)
+        factory, element = _prepare_literal_element(plan, self, context)
+
+        def finish(content: object) -> XdmSequence:
+            return (
+                _finish_literal_element(
+                    plan, self, context, factory, element, cast(XdmSequence, content)
+                ),
+            )
+
+        child = Frame(
+            kind="literal-content",
+            identity=plan.instruction.name,
+            program=plan.children,
+            context=context,
+            conversion=finish,
+            location=plan.instruction.location,
+            group=frame.group,
+            grouping_key=frame.grouping_key,
+        )
+        return Call(child, resume=replace(frame, cursor=cursor + 1))
+
+    def _step_tvt(
+        self,
+        plan: _TvtPlan,
+        frame: Frame,
+        cursor: int,
+        start: int = 0,
+        text: str = "",
+    ) -> FrameResult:
+        context = replace(frame.context, original_functions={})
+        for index, part in enumerate(plan.template.parts[start:], start):
+            if part.kind == "text":
+                text += part.text
+                continue
+            assert part.expression is not None
+            child = self._tvt_function_frame(part.expression, context)
+            if child is not None:
+                resume = replace(frame, cursor=_TvtResume(cursor, index + 1, text))
+                return Call(child, resume=resume)
+            text += self._tvt_part_string(self._evaluate(part.expression, context))
+        value = (self._text_node(text, disable_output_escaping=plan.disable_output_escaping),)
+        self._admit_output(value, frame.context)
+        return Continue(replace(frame, cursor=cursor + 1, values=frame.values + value))
+
+    def _tvt_part_string(self, value: XdmSequence) -> str:
+        return " ".join(self._string_value(item) for item in value)
+
+    def _tvt_function_frame(
+        self,
+        expression: CompiledExpression,
+        context: EvaluationContext,
+    ) -> Frame | None:
+        # The synchronous component entry clears these scopes and resolves
+        # overrides. Keep that entry in use when such state is present.
+        if (
+            expression.static_context.compatibility_mode
+            or self.stylesheet.extensions.functions
+            or context.original_components
+            or self.current_regex_groups is not None
+            or self.current_merge_sources
+            or self._expression_references_global(expression, context.package_name)
+        ):
+            return None
+        functions = self.stylesheet_functions(context.package_name)
+        if not functions:
+            return None
+        compiled = self.xpath_plan(expression)
+        if compiled is None or not _has_terminal_function(compiled.plan):
+            return None
+        variables = self._environment(context).variables
+        # An empty or multi-item binding needs full XPath sequence semantics.
+        # Schema-defined atomics also need the full evaluator's annotations.
+        if any(
+            not _tvt_scalar_binding(sequence)
+            for name, sequence in variables.items()
+            if name in compiled.variable_names
+        ):
+            return None
+        machine = self.xpath_machine(expression, variables, functions)
+        assert machine is not None
+        outcome = machine.run_until_suspension()
+        if not isinstance(outcome, Suspension) or not outcome.request.tail:
+            # No host callback has executed. A nonterminal call still needs
+            # the full evaluator to handle its result and remaining operands.
+            return None
+        target = outcome.request.target
+        assert isinstance(target, ComponentCall)
+        component = cast(Component, target.component)
+        if component.declaration.attribute("cache") == "yes":
+            return None
+        self.note_machine(machine)
+        # The expression is complete when the function returns. Its XDM
+        # sequence is the text instruction's own input for atomization, not
+        # an XPath operand to translate through the generic resume bridge.
+        return self._component_frame(
+            component,
+            arguments=self.component_arguments(outcome.request.arguments),
+            context=EvaluationContext(final_output=False),
+        )
 
     # -- try/catch ---------------------------------------------------------
 
@@ -7022,6 +7267,7 @@ class _Invocation(Transformation):
             )
         if machine is None:
             value = self._evaluate(expression, context)
+            self._admit_output(value, context)
             return Continue(
                 replace(
                     frame,
@@ -7583,7 +7829,7 @@ class _Invocation(Transformation):
                     )
                     continue
                 result.extend(
-                    self._execute_plan(
+                    self._emit_plan(
                         plan,
                         context=replace(context, locals=local_scope),
                     )
@@ -7592,6 +7838,37 @@ class _Invocation(Transformation):
             signal.prepend(result)
             raise
         return tuple(result)
+
+    def _emit_plan(
+        self,
+        plan: _Plan,
+        *,
+        context: EvaluationContext,
+    ) -> XdmSequence:
+        # These instructions pass their child sequences through unchanged.
+        # A constructor, sort, filter or rollback boundary can instead copy,
+        # combine or discard its inputs; admit only its completed output.
+        inner = context
+        if context.count_output and (
+            not context.final_output
+            or not isinstance(
+                plan,
+                (
+                    _ForEachPlan,
+                    _IteratePlan,
+                    _ForEachGroupPlan,
+                    _ChoosePlan,
+                    _SequencePlan,
+                    _CallTemplatePlan,
+                    _ApplyTemplatesPlan,
+                    _ResultDocumentPlan,
+                ),
+            )
+        ):
+            inner = replace(context, count_output=False)
+        value = self._execute_plan(plan, context=inner)
+        self._admit_output(value, context)
+        return value
 
     def _execute_plan(
         self,
@@ -7826,6 +8103,9 @@ class _Invocation(Transformation):
         self.final_uris.add(uri)
         previous_output_uri = self._current_output_uri
         self._current_output_uri = uri
+        previous_nodes = self._output_nodes
+        if context.count_output:
+            self._output_nodes = self._secondary_nodes.setdefault(uri, set())
         try:
             sequence = self._execute_plans(
                 plan.children,
@@ -7891,6 +8171,7 @@ class _Invocation(Transformation):
             raise
         finally:
             self._current_output_uri = previous_output_uri
+            self._output_nodes = previous_nodes
 
     def _secondary_uri(self, href: str) -> str:
         base = self.options.output_uri

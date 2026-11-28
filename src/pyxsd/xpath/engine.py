@@ -55,6 +55,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
+from threading import local
 from types import MethodType, SimpleNamespace
 from typing import Any, cast
 from xml.etree import ElementTree as ET
@@ -119,6 +120,7 @@ from pyxsd.xdm.values import signature_from_sequence_types
 from pyxsd.xpath import continuation
 from pyxsd.xpath.continuation import ContinuationMachine, XPathClosure
 from pyxsd.xpath.environment import (
+    _DEFAULT_MAX_ANNOTATIONS,
     ExpressionEnvironment,
     Focus,
     FocusKind,
@@ -870,7 +872,13 @@ class _XdmAdapterRegistry:
         "nodes",
     )
 
-    def __init__(self, *, max_documents: int = 512, max_nodes: int = 250_000) -> None:
+    def __init__(
+        self,
+        *,
+        max_documents: int = 512,
+        max_nodes: int = 250_000,
+        annotations: _AnnotationTable | None = None,
+    ) -> None:
         if isinstance(max_documents, bool) or not isinstance(max_documents, int):
             raise TypeError("max_documents must be an integer")
         if max_documents < 1:
@@ -886,7 +894,7 @@ class _XdmAdapterRegistry:
         #: Type annotations of bridged atomic values, shared by every
         #: evaluation in the transformation so a value passed to
         #: ``xsl:evaluate`` keeps its schema-defined type.
-        self.annotations: dict[int, tuple[Any, str]] = {}
+        self.annotations = _AnnotationTable() if annotations is None else annotations
         self._documents: dict[int, _XdmDocumentAdapter] = {}
         #: Finalized element-rooted temporary trees, keyed by the identity of
         #: the document that carries them; the value is the admitted
@@ -1050,14 +1058,6 @@ class _AnnotatedFloat(float):
     """A unique double payload carrying its XDM type annotation."""
 
 
-#: Annotation entries retained for values that cannot carry an attribute
-#: (booleans, integers, and substrate values whose copy is not distinct).  The
-#: table never evicts: a bound this wide is a resource guard, and exceeding it
-#: raises the stable implementation resource error instead of discarding a
-#: still-reachable annotation.
-_ANNOTATION_LIMIT = 262_144
-
-
 def _annotate_atomic_value(value: Any, annotation: str) -> Any:
     """Return a distinct substrate value annotated with its XDM type.
 
@@ -1108,36 +1108,44 @@ def _annotation_identity_error(message: str) -> Exception:
     )
 
 
-def _record_annotation(
-    annotations: dict[int, tuple[Any, str]], value: Any, annotation: str
-) -> None:
-    """Record one annotation for a value that cannot carry an attribute.
+class _AnnotationTable(dict[int, tuple[Any, str]]):
+    """Atomic annotations for one XPath evaluation or XSLT invocation.
 
-    The value is retained beside its address so the id cannot be recycled
-    while the annotation is live.  An existing entry is never replaced: a
-    different annotation for the same object identity means two dynamic types
-    share one singleton payload (a boolean), which this representation cannot
-    distinguish.  Guessing by value space would silently answer ``instance of``
-    with the wrong type, so it fails explicitly.  The table is bounded but
-    never evicts: an evicted entry would change a later ``instance of`` for a
-    value that is still reachable in the invocation.
+    Retain each value beside its address so identities cannot be recycled.
+    Never evict: losing an annotation can change a later ``instance of``.
     """
-    existing = annotations.get(id(value))
-    if existing is not None:
-        # The entry retains the value, so its id cannot be recycled while the
-        # record is live; a different value under that id is impossible.
-        if existing[1] == annotation:
-            return
-        raise _annotation_identity_error(
-            "two dynamic types share one atomic value identity; "
-            f"{existing[1]!r} and {annotation!r} cannot both be preserved"
-        )
-    if len(annotations) >= _ANNOTATION_LIMIT:
-        raise _annotation_resource_error(
-            "the transformation exceeded its atomic type-annotation capacity; "
-            "an annotation is still reachable and cannot be discarded"
-        )
-    annotations[id(value)] = (value, annotation)
+
+    __slots__ = ("_capacity", "_charge")
+
+    def __init__(
+        self,
+        capacity: int = _DEFAULT_MAX_ANNOTATIONS,
+        *,
+        charge: Callable[[], None] | None = None,
+    ) -> None:
+        super().__init__()
+        self._capacity = capacity
+        self._charge = charge
+
+    def record(self, value: Any, annotation: str) -> None:
+        """Keep the value beside its identity, rejecting conflicting type claims."""
+        identity = id(value)
+        existing = self.get(identity)
+        if existing is not None:
+            if existing[1] == annotation:
+                return
+            raise _annotation_identity_error(
+                "two dynamic types share one atomic value identity; "
+                f"{existing[1]!r} and {annotation!r} cannot both be preserved"
+            )
+        if self._charge is not None:
+            self._charge()
+        elif len(self) >= self._capacity:
+            raise _annotation_resource_error(
+                "the transformation exceeded its atomic type-annotation capacity; "
+                "an annotation is still reachable and cannot be discarded"
+            )
+        self[identity] = (value, annotation)
 
 
 class _PoolSchemaProxy:
@@ -1315,7 +1323,7 @@ class _ValueBridge:
         #: map holds the converted object so its id cannot be recycled while
         #: the annotation is live; elementpath's schema proxy consults it
         #: before falling back to a value-space test.
-        self._annotations = registry.annotations if registry is not None else {}
+        self._annotations = registry.annotations if registry is not None else _AnnotationTable()
 
     # XDM -> elementpath
 
@@ -1381,7 +1389,7 @@ class _ValueBridge:
             annotation = record[1] if record is not None else item.type_name
             annotated = _annotate_atomic_value(converted, annotation)
             if annotated is converted:
-                _record_annotation(self._annotations, converted, annotation)
+                self._annotations.record(converted, annotation)
             return annotated
         if isinstance(item, ResultTreeFragment):
             return _LegacyRtfValue(item)
@@ -1550,7 +1558,7 @@ class _ValueBridge:
             if annotation is None:
                 assert record is not None
                 annotation = record[1]
-            _record_annotation(self._annotations, converted[0], annotation)
+            self._annotations.record(converted[0], annotation)
             return converted
         if isinstance(value, XPathClosure):
             return (_xpath_closure_to_xdm(value, self),)
@@ -4080,19 +4088,15 @@ def _install_function_overrides(
         )
 
 
-class _BridgeHolder:
-    """Per-evaluation state of the bucket's parser.
+class _BridgeHolder(local):
+    """Per-thread dynamic slots for evaluations and deferred calls.
 
-    One holder belongs to one bucket.  ``evaluate`` assigns the four fields
-    before the evaluation and restores them afterwards, so a nested evaluation
-    on the same bucket (an ``xsl:evaluate`` inside a predicate, a host callback,
-    pattern matching inside pattern matching) sees its own values and the
-    enclosing evaluation gets its own back.  A bucket's callbacks close over
-    their holder, so concurrent transformations never share a bridge or a
-    mutable callback slot.
+    A bucket's callbacks close over its holder. Its parser cache belongs to one
+    invocation, but function items returned from evaluations on that bucket
+    can run later in separate threads. Each thread installs and restores its
+    own slots, so a nested call still sees its captured values and the enclosing
+    evaluation gets its own back.
     """
-
-    __slots__ = ("bridge", "functions", "overrides", "xpath_context")
 
     def __init__(self) -> None:
         self.bridge: _ValueBridge | None = None
@@ -4137,15 +4141,37 @@ class _XsltXPathContext(XPathContext):
             self.axis = status
 
 
+class _DocumentBindings(Mapping[str, _XdmDocumentAdapter]):
+    """Adapt documents on first lookup and keep the bridge alive with the context."""
+
+    def __init__(self, documents: Mapping[str, XdmDocument], bridge: _ValueBridge) -> None:
+        self._documents = documents
+        self._bridge = bridge
+        self._resolved: dict[str, _XdmDocumentAdapter] = {}
+
+    def __getitem__(self, uri: str) -> _XdmDocumentAdapter:
+        adapter = self._resolved.get(uri)
+        if adapter is None:
+            adapter = self._bridge.adapt_document(self._documents[uri])
+            self._resolved[uri] = adapter
+        return adapter
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._documents)
+
+    def __contains__(self, uri: object) -> bool:
+        return uri in self._documents
+
+    def __len__(self) -> int:
+        return len(self._documents)
+
+
 def _build_context(
     static_context: XPathStaticContext,
     environment: ExpressionEnvironment,
     focus: Focus,
     bridge: _ValueBridge,
 ) -> XPathContext:
-    documents = {
-        uri: bridge.adapt_document(document) for uri, document in environment.documents.items()
-    }
     collections = {
         uri: [bridge.adapt_item(node) for node in nodes]
         for uri, nodes in environment.collections.items()
@@ -4157,7 +4183,6 @@ def _build_context(
         "variables": variables,
         "current_dt": environment.current_datetime,
         "timezone": environment.timezone,
-        "documents": documents or None,
         "collections": collections or None,
         "text_resources": dict(environment.text_resources),
     }
@@ -4186,6 +4211,10 @@ def _build_context(
         context = _XsltXPathContext(item=bridge.adapt_item(focus.item), **kwargs)
     else:  # pragma: no cover - Focus validates this
         raise ValueError("focus item is missing")
+    if environment.documents:
+        # Install these bindings directly so context creation doesn't adapt
+        # every available tree. Shallow context copies share the mapping.
+        cast(Any, context).documents = _DocumentBindings(environment.documents, bridge)
     if focus.kind is not FocusKind.ABSENT:
         context.position = focus.position
         context.size = focus.size

@@ -67,7 +67,7 @@ jobs:
 
       - name: Test source archive and wheel contents
         run: >-
-          uv run --locked --extra mcp pytest tests/test_distributions.py -q
+          uv run --locked --extra mcp pytest tests/test_distributions.py tests/xslt/test_distribution.py -q
         env:
           PYXSD_DIST_DIR: dist
 

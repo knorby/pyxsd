@@ -1,10 +1,13 @@
 """Heap-resident XSLT frames and the scheduler that executes them.
 
-A transformation never maps one lexical XSLT nesting level to one Python call.
-Every component invocation, template-rule dispatch, and suspended XPath
-evaluation is a :class:`Frame` held by the scheduler's explicit stack.  A frame
-carries its instruction cursor, lexical variables, focus, return continuation,
-result-builder extent, error handler, component identity, package, and mode.
+A transformation uses explicit :class:`Frame` objects for component
+invocations, template-rule dispatches, and suspended XPath evaluations.
+Recursive template dispatch through supported literal constructors and terminal
+stylesheet calls in supported text value templates also suspend on this stack.
+Nested schedulers and work within a dispatch can still use the Python stack.
+A frame carries its instruction cursor, lexical variables, focus, return
+continuation, result-builder extent, error handler, component identity,
+package, and mode.
 
 Tail positions are marked by the compiler, not guessed by the scheduler.  A
 call is replaced in place only when the scheduler can prove that the calling
@@ -12,22 +15,25 @@ frame has no pending conversion, error handler, builder extent, or result
 continuation beyond returning to its own caller.  Otherwise the caller frame is
 kept as a heap continuation.
 
-Budget exhaustion raises :class:`~pyxsd.xslt.errors.XsltDynamicError` with the
-stable implementation code ``PYXSD-XSLT-001``.  A Python ``RecursionError`` is
-never presented as a raw failure: the scheduler converts it into that same
-resource diagnostic.  The scheduler never changes the process-wide recursion
-limit, because that limit is shared with every other thread and transformation
-in the interpreter.
+Budget exhaustion raises an uncatchable
+:class:`~pyxsd.xslt.errors.XsltDynamicError` with code ``PYXSD-XSLT-001``.
+The scheduler converts ``RecursionError`` caught at its guards into the
+same diagnostic. In CPython 3.13.8 through 3.13.12, a specialized bound
+method call can fail at the recursion ceiling with an unrelated
+``TypeError`` instead of ``RecursionError`` (CPython issue gh-145008).
+The scheduler never changes the process-wide recursion limit.
 """
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from threading import Lock
 from typing import TYPE_CHECKING, Literal, TypeAlias
 
 from pyxsd.locations import IssueLocation
-from pyxsd.xpath.environment import Focus
+from pyxsd.xpath.environment import _DEFAULT_MAX_ANNOTATIONS, Focus
 from pyxsd.xslt.errors import IMPLEMENTATION_BUDGET_CODE, XsltDynamicError
 from pyxsd.xslt.runtime.context import EvaluationContext
 
@@ -129,49 +135,126 @@ ContinuationKind: TypeAlias = Literal["resume", "append", "convert"]
 
 @dataclass(frozen=True, slots=True)
 class ExecutionLimits:
-    """Explicit heap budgets for one transformation.
+    """Explicit budgets for one transformation and its nested invocations.
 
-    ``max_frames`` bounds the live explicit frame stack.  ``max_steps`` bounds
-    scheduler dispatch steps when set; ``None`` leaves the step count
-    unbounded while still recording it.  ``max_documents`` bounds distinct
-    documents loaded through a resource policy in one invocation, and
-    ``max_output_nodes`` bounds the nodes in the delivered principal and
-    secondary result trees, and ``max_output_bytes`` bounds their encoded
-    serialized bytes when stylesheet delivery produces them.
+    ``max_frames`` defaults to 100,000 live explicit frames. Non-tail
+    arithmetic recursion keeps frames for its pending work, as do supported
+    terminal stylesheet calls in text value templates and template dispatch
+    in literal result content. The scheduled content includes nested
+    literals, ``xsl:sequence`` bodies, ``xsl:if`` and ``xsl:choose``,
+    ``xsl:try`` and ``xsl:catch``, ``xsl:for-each``,
+    ``xsl:for-each-group`` and ``xsl:iterate`` bodies, ``xsl:fork`` branches,
+    and selected ``xsl:fallback`` bodies.
+
+    Python can stop recursion first in literal construction under a live
+    merge scope and in text value templates inside scheduled literal
+    content. Other synchronous content includes ``xsl:value-of``,
+    ``xsl:attribute``, ``xsl:comment``, ``xsl:processing-instruction``,
+    ``xsl:namespace``, ``xsl:element``, ``xsl:document``, ``xsl:copy``,
+    ``xsl:map``, ``xsl:map-entry``, ``xsl:variable``, ``xsl:param``,
+    ``xsl:with-param`` (including in ``xsl:evaluate``), ``xsl:break``,
+    ``xsl:next-iteration`` parameters,
+    ``xsl:on-completion``, ``xsl:perform-sort``, ``xsl:sort`` and
+    ``xsl:merge-key`` constructors, ``xsl:merge-action``,
+    ``xsl:source-document``, ``xsl:result-document``,
+    ``xsl:analyze-string`` substring bodies, ``xsl:assert``, ``xsl:message``,
+    ``xsl:where-populated``, ``xsl:on-empty`` and ``xsl:on-non-empty``.
+    The same limit can stop fallback XPath, such as ``($n, f($n - 1))``,
+    a stylesheet function building nested elements (including adaptation
+    of a deep result tree on XPath resume), or a long static XPath path.
+    The depth depends on the interpreter and its version.
+
+    Frame-budget exhaustion and ``RecursionError`` caught at
+    scheduler guards raise an uncatchable
+    :class:`~pyxsd.xslt.errors.XsltDynamicError` with code
+    ``PYXSD-XSLT-001``. In CPython 3.13.8 through 3.13.12, a specialized
+    bound method call at the recursion ceiling can raise an unrelated
+    ``TypeError`` instead of ``RecursionError`` (CPython issue gh-145008).
+
+    A safe tail call replaces its frame in place. Use ``max_steps`` to
+    bound the number of scheduler dispatches in a tail-call chain;
+    ``max_frames`` does not bound the length of that chain. ``max_steps``
+    does not interrupt work within one dispatch. ``max_documents`` bounds
+    loaded XML documents. These and other limits described here default
+    to ``None`` unless stated otherwise.
+
+    With the default ``max_steps=None``, the processor does not stop an
+    unbounded safe tail recursion; callers bound such a chain by setting
+    ``max_steps``.
+
+    ``max_resource_bytes`` bounds octets the transformation runtime acquires.
+    Top-level stylesheet compilation reads and schema loads made by
+    ``xsl:import-schema`` are outside this budget. A host
+    ``ResourcePolicy.read()`` can allocate a whole resource before handing
+    it over; the budget charges its returned bytes at that handoff.
+
+    ``max_annotations`` defaults to 262,144 atomic type annotation entries
+    recorded cumulatively across the transformation and its nested calls.
+    It governs runtime tables; static XPath evaluation during stylesheet
+    compilation precedes invocation and uses the XPath engine's own default.
+    Each runtime table retains the values for its invocation's
+    lifetime, so disabling the cap allows memory to grow with the number
+    of distinct typed values bridged to or from XPath.
+
+    ``max_output_nodes`` counts raw principal and secondary output nodes,
+    their descendants and owned attributes, once by identity per result
+    entry. Namespace nodes and implicit normalization document nodes are
+    excluded; text nodes that normalization merges are counted separately.
+    This bounds delivered nodes, not memory: provisional constructor and
+    copy trees are built before their final nodes can be admitted.
+    ``max_output_bytes`` bounds bytes encoded for stylesheet delivery and
+    later :meth:`~pyxsd.xslt.results.TransformationResult.write` calls.
+    Writing a result again spends the same budget. To deliver again after
+    exhausting that budget, run the transformation with a larger limit or
+    with ``None``.
+
+    ``None`` disables any limit. Nested transforms inherit the settings
+    unchanged and share the cumulative ledger; frames count while live.
+    Exhaustion raises an uncatchable
+    :class:`~pyxsd.xslt.errors.XsltDynamicError` with code ``PYXSD-XSLT-001``.
     """
 
-    max_frames: int = 100_000
+    max_frames: int | None = 100_000
     max_steps: int | None = None
     max_documents: int | None = None
     max_output_nodes: int | None = None
     max_output_bytes: int | None = None
+    max_resource_bytes: int | None = None
+    max_annotations: int | None = _DEFAULT_MAX_ANNOTATIONS
 
     def __post_init__(self) -> None:
-        if isinstance(self.max_frames, bool) or not isinstance(self.max_frames, int):
-            raise TypeError("max_frames must be an integer")
-        if self.max_frames < 1:
-            raise ValueError("max_frames must be at least 1")
+        _validate_optional_limit("max_frames", self.max_frames)
         _validate_optional_limit("max_steps", self.max_steps)
         _validate_optional_limit("max_documents", self.max_documents)
         _validate_optional_limit("max_output_nodes", self.max_output_nodes)
         _validate_optional_limit("max_output_bytes", self.max_output_bytes)
+        _validate_optional_limit("max_resource_bytes", self.max_resource_bytes)
+        _validate_optional_limit("max_annotations", self.max_annotations)
 
 
 class ExecutionBudget:
-    """Live frame, step, document, and output counters shared by nested schedulers.
+    """One invocation's shared ledger for :class:`ExecutionLimits`.
 
-    One budget belongs to a transformation.  Top-level and nested schedulers
-    acquire and release frames from the same counters, so a nested execution
-    cannot reset a caller's configured limits.
+    Frames default to a limit of 100,000; steps, documents, resource bytes,
+    output nodes and encoded output bytes default to ``None`` (unlimited).
+    The default annotation cap is 262,144 entries across runtime tables,
+    including those in nested invocations.
+    Nested transforms inherit all settings. Frames are counted
+    while live; the other limits are cumulative, including later result
+    writes. A failed charge is reported as an uncatchable
+    :class:`~pyxsd.xslt.errors.XsltDynamicError` (``PYXSD-XSLT-001``).
     """
 
     __slots__ = (
+        "_output_lock",
+        "annotations",
         "documents",
         "frames",
         "limits",
         "max_frame_depth",
         "output_bytes",
         "output_nodes",
+        "resource_bytes",
         "steps",
     )
 
@@ -181,11 +264,14 @@ class ExecutionBudget:
         if not isinstance(limits, ExecutionLimits):
             raise TypeError("limits must be an ExecutionLimits value")
         self.limits = limits
+        self.annotations = 0
         self.steps = 0
         self.frames = 0
         self.documents = 0
         self.output_nodes = 0
         self.output_bytes = 0
+        self._output_lock = Lock() if limits.max_output_bytes is not None else None
+        self.resource_bytes = 0
         self.max_frame_depth = 0
 
     def take_step(self) -> bool:
@@ -197,7 +283,7 @@ class ExecutionBudget:
 
     def acquire_frame(self) -> bool:
         """Acquire one live frame slot, returning whether it was within budget."""
-        if self.frames >= self.limits.max_frames:
+        if self.limits.max_frames is not None and self.frames >= self.limits.max_frames:
             return False
         self.frames += 1
         self.max_frame_depth = max(self.max_frame_depth, self.frames)
@@ -224,12 +310,54 @@ class ExecutionBudget:
         return True
 
     def take_output_bytes(self, count: int) -> bool:
-        """Record encoded serialized output bytes, returning whether they fit."""
+        """Record bytes for a thread-confined counter; use reservations for writes."""
         total = self.output_bytes + count
         if self.limits.max_output_bytes is not None and total > self.limits.max_output_bytes:
             return False
         self.output_bytes = total
         return True
+
+    def charge_resource_bytes(self, count: int) -> None:
+        """Charge acquired resource octets against the enabled limit."""
+        limit = self.limits.max_resource_bytes
+        if limit is None:
+            return
+        self.resource_bytes += count
+        if self.resource_bytes > limit:
+            raise resource_error(
+                self.exhaustion("resource byte", "max_resource_bytes", self.resource_bytes)
+            )
+
+    def charge_annotation(self) -> None:
+        """Admit one new annotation across the invocation's runtime tables."""
+        limit = self.limits.max_annotations
+        if limit is None:
+            return
+        attempted = self.annotations + 1
+        if attempted > limit:
+            raise resource_error(
+                self.exhaustion("atomic type-annotation", "max_annotations", attempted)
+            )
+        self.annotations = attempted
+
+    def _take_output_chunk(self, count: int) -> tuple[int, int]:
+        """Reserve a chunk's allowed prefix and return (allowed, attempted total)."""
+        limit = self.limits.max_output_bytes
+        assert limit is not None and self._output_lock is not None
+        # Only result writes can spend the balance on more than one thread.
+        # Never hold the ledger lock while invoking the caller's destination.
+        with self._output_lock:
+            attempted = self.output_bytes + count
+            allowed = min(count, limit - self.output_bytes)
+            self.output_bytes += allowed
+            return allowed, attempted
+
+    def exhaustion(self, label: str, field: str, amount: int) -> str:
+        """Describe an attempted charge beyond the configured limit."""
+        return (
+            f"the transformation exceeded its {label} budget: "
+            f"{field}={getattr(self.limits, field)}, cumulative amount={amount}"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -508,22 +636,20 @@ class Scheduler:
             while self._frames:
                 frame = self._frames[-1]
                 if not self.budget.take_step():
-                    raise self._resource_error("the transformation exceeded its step budget")
+                    raise self._resource_error(
+                        self.budget.exhaustion("step", "max_steps", self.budget.steps + 1)
+                    )
                 try:
                     outcome = step(frame)
                 except RecursionError as exc:
-                    raise self._resource_error(
-                        "the transformation exceeded the Python recursion limit"
-                    ) from exc
+                    raise self._python_stack_error() from exc
                 except BaseException as exc:
                     self._unwind(exc)
                     continue
                 try:
                     self._handle_outcome(frame, outcome)
                 except RecursionError as exc:
-                    raise self._resource_error(
-                        "the transformation exceeded the Python recursion limit"
-                    ) from exc
+                    raise self._python_stack_error() from exc
             return self._result
         finally:
             self._active = False
@@ -533,7 +659,9 @@ class Scheduler:
         if not isinstance(frame, Frame):  # pragma: no cover - callers validate
             raise TypeError("a scheduler frame must be a Frame")
         if not self.budget.acquire_frame():
-            raise self._resource_error("the transformation exceeded its frame budget")
+            raise self._resource_error(
+                self.budget.exhaustion("frame", "max_frames", self.budget.frames + 1)
+            )
         self._frames.append(frame)
 
     def _release_all_frames(self) -> None:
@@ -677,6 +805,15 @@ class Scheduler:
         commit = getattr(frame.extent, "commit", None)
         if callable(commit):
             commit()
+
+    def _python_stack_error(self) -> XsltDynamicError:
+        limit = self.limits.max_frames
+        configured = "None (no frame budget)" if limit is None else str(limit)
+        return self._resource_error(
+            "the transformation exceeded the Python recursion limit: "
+            f"Python recursion limit={sys.getrecursionlimit()}, "
+            f"max_frames={configured}, frame depth={self.budget.frames}"
+        )
 
     def _resource_error(self, message: str) -> XsltDynamicError:
         stack = tuple(frame.diagnostic() for frame in self._frames)

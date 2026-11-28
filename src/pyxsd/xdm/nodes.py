@@ -16,7 +16,7 @@ does not stream.
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from itertools import count
@@ -535,6 +535,7 @@ class XdmDocument(XdmNode):
         document_uri: str | None = None,
         base_uri: str | None = None,
         source_name: str | None = None,
+        _charge_input: Callable[[int], None] | None = None,
     ) -> XdmDocument:
         """Parse a path, bytes-like object, or readable stream into a document.
 
@@ -544,7 +545,7 @@ class XdmDocument(XdmNode):
         *base_uri* default from a path-like source, and *schema_pool* is
         retained for the schema-aware annotation layer.
         """
-        content, natural_name = _read_source(source)
+        content, natural_name = _read_source(source, charge=_charge_input)
         if source_name is None:
             source_name = natural_name
         if source_index is None:
@@ -843,7 +844,9 @@ class _Builder:
 _READ_CHUNK = 65536
 
 
-def _read_source(source: Any, *, max_bytes: int | None = None) -> tuple[bytes | str, str | None]:
+def _read_source(
+    source: Any, *, max_bytes: int | None = None, charge: Callable[[int], None] | None = None
+) -> tuple[bytes | str, str | None]:
     """Read one path, bytes-like object, or readable stream.
 
     Streams are read until EOF because a readable stream may return short
@@ -854,18 +857,23 @@ def _read_source(source: Any, *, max_bytes: int | None = None) -> tuple[bytes | 
     if isinstance(source, (str, os.PathLike)):
         path = os.fspath(source)
         with open(path, "rb") as stream:
-            return _read_stream(stream.read, max_bytes), path
+            return _read_stream(stream.read, max_bytes, charge), path
     if isinstance(source, (bytes, bytearray, memoryview)):
-        return bytes(source), None
+        content = bytes(source)
+        if charge is not None:
+            charge(len(content))
+        return content, None
     read = getattr(source, "read", None)
     if read is None:
         raise TypeError("XdmDocument.parse requires a path, bytes, or readable stream")
     name = getattr(source, "name", None)
     natural_name = name if isinstance(name, str) else None
-    return _read_stream(read, max_bytes), natural_name
+    return _read_stream(read, max_bytes, charge), natural_name
 
 
-def _read_stream(read: Any, max_bytes: int | None) -> bytes | str:
+def _read_stream(
+    read: Any, max_bytes: int | None, charge: Callable[[int], None] | None = None
+) -> bytes | str:
     """Read a readable stream to EOF, optionally stopping past a byte cap."""
     parts: list[bytes | str] = []
     total = 0
@@ -895,8 +903,11 @@ def _read_stream(read: Any, max_bytes: int | None) -> bytes | str:
             raise TypeError("an XML source stream must return str or bytes")
         if not chunk:
             break
+        size = len(chunk.encode("utf-8")) if isinstance(chunk, str) else len(chunk)
+        if charge is not None:
+            charge(size)
         parts.append(chunk)
-        total += len(chunk.encode("utf-8")) if isinstance(chunk, str) else len(chunk)
+        total += size
         if max_bytes is not None and total > max_bytes:
             # Never hand a truncated source to the semantic parser: a
             # shortened prefix can still be well-formed (for example after

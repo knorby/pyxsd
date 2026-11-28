@@ -63,7 +63,9 @@
   unreachable, delete it instead of contriving a test to touch it.
 - New tests run in CI on every supported version (currently 3.11–3.15). A
   test that passes only on the newest interpreter or only on macOS is a CI
-  failure.
+  failure. Do not pin interpreter recursion accounting or other
+  interpreter-version-specific depths. Document recursion depth as
+  version-dependent.
 
 ## XSTS conformance
 

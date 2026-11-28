@@ -1175,7 +1175,7 @@ cases = [
   "result-document/result-document-1501",
   "variable/variable-0108",
 ]
-reason = "These rows are recorded as timeout because the case exceeded the harness's 5 s per-case budget, not because a semantic verdict was observed. The set is stable across runs except for known load sensitivity (function-1301 is not in this set; it passes serially). Performance work belongs to the roadmap's operational-hardening task; the committed baseline keeps the recorded timeout verdicts."
+reason = "Bounded probes returned controlled timeouts at the harness's 5 s case budget. Samples showed catalog schema binding, XML parsing, adapter construction and pattern evaluation; XPath environment setup, parsing, value conversion or comparisons; and instruction execution in result-document-1501. In variable-0108, per-evaluation environment construction (_environment, function_overrides and _override_symbol) under the stylesheet's pairwise span predicates is a measured cost, not a hang. Performance work remains a follow-up; these timeouts do not establish semantic verdicts."
 links = ["https://github.com/w3c/xslt30-test", "https://www.w3.org/TR/xslt-30/"]
 
 [[dispositions]]
@@ -1192,7 +1192,7 @@ cases = [
   "regex-syntax-xslt20/regex-syntax-xslt20-0987",
   "variable/variable-0108",
 ]
-reason = "These rows are recorded as timeout because the case exceeded the harness's 5 s per-case budget, not because a semantic verdict was observed. The set is stable across runs except for known load sensitivity (function-1301 is not in this set; it passes serially). Performance work belongs to the roadmap's operational-hardening task; the committed baseline keeps the recorded timeout verdicts."
+reason = "Bounded probes returned controlled timeouts at the harness's 5 s case budget. Samples showed catalog parsing and adapter construction, XDM sequence conversion, and XPath setup in pattern predicates and the regex syntax test. For variable-0108 the xslt20 sample shows value copying; the xslt30 profile of the same stylesheet shows the shared cost of per-evaluation environment construction (_environment, function_overrides and _override_symbol) under pairwise span predicates. Performance work remains a follow-up; these timeouts do not establish semantic verdicts."
 links = ["https://github.com/w3c/xslt30-test", "https://www.w3.org/TR/xslt-30/"]
 
 [[dispositions]]
@@ -1201,7 +1201,7 @@ title = "xslt10 cases that exceed the 5 s per-case harness budget"
 category = "performance-budget"
 profiles = ["xslt10"]
 cases = ["match/match-242"]
-reason = "These rows are recorded as timeout because the case exceeded the harness's 5 s per-case budget, not because a semantic verdict was observed. The set is stable across runs except for known load sensitivity (function-1301 is not in this set; it passes serially). Performance work belongs to the roadmap's operational-hardening task; the committed baseline keeps the recorded timeout verdicts."
+reason = "A bounded probe returned a controlled timeout at the harness's 5 s case budget while evaluating an XPath predicate in a match pattern (parse_syntax_only). Performance work remains a follow-up; the timeout does not establish a semantic verdict."
 links = ["https://github.com/w3c/xslt30-test", "https://www.w3.org/TR/xslt-30/"]
 
 [[dispositions]]
@@ -1237,12 +1237,10 @@ cases = [
   "function/function-0701",
   "function/function-1031",
   "higher-order-functions/higher-order-functions-068",
-  "seqtor/seqtor-027",
-  "seqtor/seqtor-028",
   "seqtor/seqtor-032",
   "seqtor/seqtor-033",
 ]
-reason = "These cases recurse through XPath expression evaluation and closure calls deeply enough to exceed CPython's per-interpreter recursion limit. They used to pass only because semantic execution raised the process-wide limit for the duration of a transformation; that global mutation raced with every other thread and is removed. The runtime now reports the stable implementation resource code PYXSD-XSLT-001 instead of a raw RecursionError. Moving this recursion onto the heap scheduler is operational work tracked outside this branch, so these rows are controlled resource failures, not wrong results."
+reason = "These cases recurse through synchronous XPath expression evaluation and closure calls deeply enough to exceed CPython's per-interpreter recursion limit. The runtime reports the stable implementation resource code PYXSD-XSLT-001 instead of a raw RecursionError, so these rows are controlled resource failures rather than wrong results. Tail calls, simple arithmetic self-recursion, template dispatch, and literal content around a template call run on the heap scheduler; copying a result subtree uses an iterative explicit stack. The remaining recursion here stays inside synchronous comma sequences, short-circuit Boolean operands, count() over paths, and full-focus variable selects. A recorded follow-up pull request moves those expression shapes onto the heap scheduler."
 links = ["https://www.w3.org/TR/xslt-30/#dynamic-errors", "https://docs.python.org/3/library/sys.html#sys.setrecursionlimit"]
 
 [[dispositions]]
@@ -1251,7 +1249,7 @@ title = "the knight's-tour recursion reaches the Python stack budget in the 2.0 
 category = "platform-limit"
 profiles = ["xslt20"]
 cases = ["function/function-0701"]
-reason = "The 2.0-profile knight's-tour stylesheet recurses through XPath expression evaluation deeply enough to exceed CPython's per-interpreter recursion limit. It used to pass only because semantic execution raised the process-wide limit during a transformation, which raced with every other thread; that mutation is removed. The runtime reports PYXSD-XSLT-001 (a controlled resource failure), not a wrong result. Heap-scheduler recursion belongs to the operational task."
+reason = "function/function-0701 recurses through the knight's-tour stylesheet's synchronous variable select and xsl:sequence calls deeply enough to exceed CPython's per-interpreter recursion limit. Template application and literal content around a template call run on the heap scheduler, and copying a result subtree uses an iterative explicit stack; this recurrence keeps synchronous full-focus variable selects and predicates. The runtime reports PYXSD-XSLT-001, a controlled resource failure rather than a wrong result. A recorded follow-up pull request covers the remaining variable-select and focus seams."
 links = ["https://www.w3.org/TR/xslt-30/#dynamic-errors", "https://docs.python.org/3/library/sys.html#sys.setrecursionlimit"]
 
 # F&O 3.1 §17.5.3 defines FOJS0004 for validate=true() when the processor

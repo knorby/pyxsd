@@ -13,7 +13,7 @@ seams consumed by the processor.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Any, cast
@@ -34,6 +34,7 @@ from pyxsd.xslt.runtime.builder import (
     _prefix_for as _prefix_for,
 )
 from pyxsd.xslt.runtime.builder import build_result_tree
+from pyxsd.xslt.runtime.frames import ExecutionBudget
 from pyxsd.xslt.serialization import SerializationParameters, Serializer
 from pyxsd.xslt.serialization.characters import character_map_pairs
 
@@ -169,6 +170,7 @@ def delivered_entries(
     *,
     delivery: str,
     principal_parameters: Mapping[str, Any] | None = None,
+    _serialized_principal_ready: bool = False,
 ) -> list[tuple[str, XdmSequence]]:
     """Return the ``fn:transform`` view of one transformation result.
 
@@ -201,9 +203,12 @@ def delivered_entries(
             # delivery always populates the serialized string.
             entries.append((key, cast(XdmSequence, (principal.tree,))))
         else:
-            entries.append(
-                (key, cast(XdmSequence, (result.serialize(None, parameters=principal_parameters),)))
+            serialized = (
+                principal.serialized
+                if _serialized_principal_ready
+                else result.serialize(None, parameters=principal_parameters)
             )
+            entries.append((key, cast(XdmSequence, (serialized,))))
     if delivery == "serialized":
         for uri, entry in result.secondary.items():
             entries.append((uri, cast(XdmSequence, (entry.serialized,))))
@@ -299,6 +304,7 @@ class TransformationResult:
     messages: tuple[Message, ...] = ()
     warnings: tuple[str, ...] = ()
     _output_policy: OutputPolicy | None = field(default=None, compare=False, repr=False)
+    _budget: ExecutionBudget | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.principal_entry, ResultEntry):
@@ -394,6 +400,13 @@ class TransformationResult:
         one class, so a destination's own timeout and the caller's alarm are
         indistinguishable here, and the alarm is the likelier origin once a
         budget is set.
+
+        Encoded bytes share the invocation's ``max_output_bytes`` budget with
+        stylesheet delivery, nested transforms, and previous writes. Each
+        write encodes again. To deliver again after exhausting the budget,
+        run the transformation with a larger limit or with ``None``.
+        On failure a binary destination can retain the prefix written so far;
+        a path opened by this call is closed without removal.
         """
         entry = self._entry(uri)
         if entry.output_uri is None:
@@ -406,7 +419,7 @@ class TransformationResult:
             policy.authorize(entry.output_uri, principal=uri is None)
         resolved = serialization_parameters(entry, parameters)
         try:
-            Serializer.write(entry.raw, resolved, destination)
+            Serializer.write(entry.raw, resolved, destination, _budget=self._budget)
         except OSError as error:
             if is_budget_alarm(error):
                 raise
@@ -425,15 +438,17 @@ def _result_node_count(sequence: XdmSequence) -> int:
     The identity set prevents a sequence that contains both an ancestor and a
     descendant from charging the same node twice.
     """
-    seen: set[int] = set()
-    total = 0
-    for item in sequence:
-        if not isinstance(item, XdmNode):
+    return sum(1 for _ in _new_result_nodes(sequence, set()))
+
+
+def _new_result_nodes(sequence: tuple[object, ...], seen: set[int]) -> Iterator[XdmNode]:
+    """Walk output nodes and add their identities without materializing descendants."""
+    stack = list(reversed(sequence))
+    while stack:
+        node = stack.pop()
+        if not isinstance(node, XdmNode) or node.kind is NodeKind.NAMESPACE or id(node) in seen:
             continue
-        for node in (item, *item.descendants):
-            identity = id(node)
-            if identity in seen:
-                continue
-            seen.add(identity)
-            total += 1 + len(node.attributes)
-    return total
+        seen.add(id(node))
+        yield node
+        stack.extend(reversed(node.children))
+        stack.extend(reversed(node.attributes))

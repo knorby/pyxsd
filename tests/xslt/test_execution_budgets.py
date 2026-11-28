@@ -154,7 +154,17 @@ def test_budget_counters_are_invocation_local() -> None:
     assert unlimited.output_bytes == 5
 
 
-@pytest.mark.parametrize("field", ["max_documents", "max_output_nodes", "max_output_bytes"])
+@pytest.mark.parametrize(
+    "field",
+    [
+        "max_annotations",
+        "max_documents",
+        "max_frames",
+        "max_output_bytes",
+        "max_output_nodes",
+        "max_resource_bytes",
+    ],
+)
 def test_optional_budget_fields_are_validated(field: str) -> None:
     with pytest.raises(TypeError, match=field):
         ExecutionLimits(**{field: True})
@@ -163,6 +173,7 @@ def test_optional_budget_fields_are_validated(field: str) -> None:
     with pytest.raises(ValueError, match=field):
         ExecutionLimits(**{field: 0})
     assert getattr(ExecutionLimits(**{field: 1}), field) == 1
+    assert getattr(ExecutionLimits(**{field: None}), field) is None
 
 
 def test_document_resources_validate_a_budget() -> None:
@@ -351,8 +362,8 @@ def test_node_and_byte_budgets_report_distinct_diagnostics() -> None:
         )
     node_text = str(node_error.value)
     byte_text = str(byte_error.value)
-    assert node_text.endswith("the transformation exceeded its output budget")
-    assert byte_text.endswith("the transformation exceeded its output byte budget")
+    assert "the transformation exceeded its output budget: max_output_nodes=1" in node_text
+    assert "the transformation exceeded its output byte budget: max_output_bytes=1" in byte_text
     assert node_text != byte_text
 
 
@@ -360,5 +371,5 @@ def test_unlimited_node_budget_does_not_walk_results(monkeypatch) -> None:
     def fail_if_called(*args: object, **kwargs: object) -> int:
         raise AssertionError("an unlimited node budget must not count result nodes")
 
-    monkeypatch.setattr("pyxsd.xslt.processor._result_node_count", fail_if_called)
+    monkeypatch.setattr("pyxsd.xslt.processor._new_result_nodes", fail_if_called)
     assert compile_text_only_stylesheet().transform().principal

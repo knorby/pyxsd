@@ -42,6 +42,8 @@ __all__ = [
 
 FunctionArity: TypeAlias = int | tuple[int, int | None]
 
+_DEFAULT_MAX_ANNOTATIONS = 262_144
+
 
 def _freeze_mapping(mapping: Mapping[Any, Any], label: str) -> Mapping[Any, Any]:
     if not isinstance(mapping, Mapping):

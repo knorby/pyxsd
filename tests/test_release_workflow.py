@@ -88,6 +88,24 @@ def test_core_coverage_and_xsts_run_as_concurrent_version_matrices():
     assert "PYXSD_RUN_RELAXNG" not in xsts["env"]
 
 
+@pytest.mark.parametrize("filename", ["ci.yml", "release.yml"])
+def test_distribution_checks_run_the_offline_xslt_install_test(filename):
+    steps = [
+        step
+        for job in _workflow(filename)["jobs"].values()
+        for step in job.get("steps", [])
+        if isinstance(step, dict)
+    ]
+    pinned = [
+        step
+        for step in steps
+        if "pytest tests/test_distributions.py tests/xslt/test_distribution.py"
+        in step.get("run", "")
+    ]
+    assert len(pinned) == 1, filename
+    assert pinned[0]["env"]["PYXSD_DIST_DIR"] == "dist"
+
+
 def test_registry_publication_is_separate_from_github_and_uses_oidc():
     jobs = _workflow("release.yml")["jobs"]
     registry = jobs["mcp-registry"]

@@ -1394,8 +1394,10 @@ def run_parallel(
     """
     cases = tuple(cases)
     workers = default_jobs() if jobs is None else max(1, jobs)
-    if workers == 1 or len(cases) <= 1:
+    if not cases or (timeout is None and (workers == 1 or len(cases) == 1)):
         return run_suite(cases, profile, timeout=timeout)
+    if len(cases) == 1:
+        workers = 1
     unicode_version = profile.feature_profile.unicode_version
     method = _parallel_start_method(
         in_xdist_worker="PYTEST_XDIST_WORKER" in os.environ,
@@ -1406,6 +1408,7 @@ def run_parallel(
     results: dict[str, CaseResult] = {}
     pending = list(cases)
     pool = context.Pool(processes=workers)
+    completed = False
     try:
         while pending:
             batch = pending[:workers]
@@ -1443,7 +1446,16 @@ def run_parallel(
                     results[name] = result
                     if on_progress is not None:
                         on_progress(len(results), len(cases))
+        completed = True
     finally:
-        pool.close()
-        pool.join()
+        if completed:
+            pool.close()
+            pool.join()
+        else:
+            # Any unexpected parent-side exit leaves a worker in the same
+            # C-level hang the deadline path handles.  ``close`` lets that
+            # worker finish, so an interrupt or unmarshalling error would
+            # wait forever; ``terminate`` stops the whole worker tree.
+            pool.terminate()
+            pool.join()
     return tuple(results[case.name] for case in cases)
