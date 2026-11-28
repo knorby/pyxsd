@@ -33,7 +33,7 @@ jobs:
       - name: Build and test distribution contents outside the checkout
         run: |
           uv build
-          uv run --locked --extra mcp pytest tests/test_distributions.py -q
+          uv run --locked --extra mcp pytest tests/test_distributions.py tests/xslt/test_distribution.py -q
         env:
           PYXSD_DIST_DIR: dist
       - name: Smoke-test clean installation from each archive

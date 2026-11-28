@@ -179,13 +179,15 @@ pyxsd uses [semantic versioning](https://semver.org/spec/v2.0.0.html)
    Python 3.11–3.15, minimum/current optional dependency, oracle, XSTS, and
    documentation checks on the exact release commit.
 4. Build fresh archives with `uv build --out-dir /path/to/empty-dist`, then run
-   `PYXSD_DIST_DIR=/path/to/empty-dist uv run --extra mcp pytest tests/test_distributions.py -q`.
+   `PYXSD_DIST_DIR=/path/to/empty-dist uv run --extra mcp pytest tests/test_distributions.py tests/xslt/test_distribution.py -q`.
    This extracts the source archive outside the checkout and runs its benchmark
-   tests, and checks wheel skills and entry points. Also smoke-test installation
-   from each archive in clean environments, including base-only and optional
-   extras. The source archive includes benchmark fixtures but intentionally
-   excludes `tests/xsts/corpus`: full XSTS runs require a repository checkout
-   with the pinned submodule initialized.
+   tests, checks wheel skills and entry points, and installs each archive
+   offline into an isolated environment before running the XSLT smoke script.
+   Also smoke-test installation from each archive in clean environments,
+   including base-only and optional extras. The source archive includes
+   benchmark fixtures but intentionally excludes `tests/xsts/corpus`: full
+   XSTS runs require a repository checkout with the pinned submodule
+   initialized.
 5. Submit the preparation branch as a PR. After review, tag the verified
    release commit `vMAJOR.MINOR.MICRO` and push the tag only when publication
    is authorized. The tag must match the package version.
