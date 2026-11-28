@@ -918,17 +918,25 @@ def test_parallel_unexpected_parent_failure_terminates_a_stuck_worker(tmp_path):
 import functools
 import json
 import multiprocessing
+import os
 import sys
+import threading
 from tests.xslt import suite
 from tests.xslt.catalog import load_catalog
 from tests.xslt.test_ci_contract import _receive_stuck_sibling, _unpicklable_payload
 
-stuck = multiprocessing.Event()
-for method in multiprocessing.get_all_start_methods():
-    context = multiprocessing.get_context(method)
-    context.Pool = functools.partial(
-        context.Pool, initializer=_receive_stuck_sibling, initargs=(stuck,)
-    )
+# The event has to come from the context the runner is about to pick.  A lock
+# created in the fork context (the Linux default up to 3.13) cannot be shared
+# with spawn workers, which the runner picks inside an xdist worker.
+method = suite._parallel_start_method(
+    in_xdist_worker="PYTEST_XDIST_WORKER" in os.environ,
+    active_threads=threading.active_count(),
+)
+context = multiprocessing.get_context(method)
+stuck = context.Event()
+context.Pool = functools.partial(
+    context.Pool, initializer=_receive_stuck_sibling, initargs=(stuck,)
+)
 suite._run_payload = _unpicklable_payload
 cases = tuple(load_catalog(sys.argv[1]).cases.values())
 try:
@@ -937,6 +945,7 @@ except BaseException as error:
     print(json.dumps([
         type(error).__name__,
         stuck.is_set(),
+        method,
         [child.pid for child in multiprocessing.active_children()],
     ]))
 else:
@@ -947,9 +956,10 @@ else:
         cwd=REPO_ROOT,
         timeout=60,
     )
-    error_name, sibling_stuck, children = json.loads(run.stdout)
+    error_name, sibling_stuck, method, children = json.loads(run.stdout)
     assert error_name == "MaybeEncodingError"
     assert sibling_stuck
+    assert method in {"fork", "spawn"}
     assert children == []
 
 
